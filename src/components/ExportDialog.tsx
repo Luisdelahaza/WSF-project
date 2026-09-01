@@ -39,12 +39,12 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
+  // The ACTUAL format of the current resultUrl (from the resulting Blob's
+  // real MIME type) — independent of `format`, the user's request. See the
+  // comment on ExportPanel's `resultFormat` prop.
+  const [resultFormat, setResultFormat] = useState<ExportFormat | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [videoSupported, setVideoSupported] = useState(true);
-  // True when the user asked for a video but the export pipeline silently
-  // degraded to GIF (neither WebCodecs/Mediabunny nor MediaRecorder worked
-  // in this browser). Both fallback paths only `console.warn` internally —
-  // this surfaces it to the person actually exporting.
   const [degraded, setDegraded] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -62,12 +62,11 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
   useEffect(() => () => void (resultUrl && URL.revokeObjectURL(resultUrl)), [resultUrl]);
 
   // Reset any previous export result whenever an input that would make it
-  // stale changes. Previously `setResultUrl(null)` only happened at the top
-  // of onExport, so changing the area/period/format *after* exporting left
-  // the Download button visible and pointing at a blob for parameters that
-  // no longer match what's selected.
+  // stale changes — otherwise the Download button stays visible/enabled and
+  // pointing at a blob for parameters that no longer match the selection.
   useEffect(() => {
     setResultUrl(null);
+    setResultFormat(null);
     setDegraded(false);
   }, [bbox, params, startEpoch, endEpoch, format]);
 
@@ -107,6 +106,7 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
     setBusy(true);
     setError(null);
     setResultUrl(null);
+    setResultFormat(null);
     setDegraded(false);
     setProgress({ done: 0, total: frames.length });
     const controller = new AbortController();
@@ -128,11 +128,12 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
         ? encodeGif(captured, fps, { signal: controller.signal })
         : encodeVideo(captured, fps, controller.signal));
 
-      // Both encodeVideo's internal tier fallbacks and encodeGif's own
-      // Worker->main-thread fallback degrade silently — this is the one
-      // place we can actually tell: the user asked for something other
-      // than GIF, but what came back IS a GIF.
-      if (format !== "gif" && blob.type === "image/gif") {
+      // Derive the ACTUAL format from what came back, not from what was
+      // requested — this is the single source of truth for the download
+      // filename/extension and for detecting silent degradation.
+      const actualFormat: ExportFormat = blob.type === "image/gif" ? "gif" : "webm";
+      setResultFormat(actualFormat);
+      if (format !== "gif" && actualFormat === "gif") {
         setDegraded(true);
       }
 
@@ -197,6 +198,7 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
               busy={busy}
               progress={progress}
               resultUrl={resultUrl}
+              resultFormat={resultFormat}
               format={format}
               loading={loading}
               onExport={onExport}

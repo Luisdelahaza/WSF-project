@@ -33,7 +33,7 @@ importers:
         specifier: 5.24.0
         version: 5.24.0
       mediabunny:
-        specifier: ^1.55.5
+        specifier: 1.55.5
         version: 1.55.5
       next:
         specifier: 15.5.15
@@ -47,9 +47,6 @@ importers:
       tailwind-merge:
         specifier: 3.6.0
         version: 3.6.0
-      webm-muxer:
-        specifier: ^5.1.4
-        version: 5.1.4
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4.1.0
@@ -890,9 +887,6 @@ packages:
   '@types/react@19.2.0':
     resolution: {integrity: sha512-1LOH8xovvsKsCBq1wnT4ntDUdCJKmnEakhsuoUSy6ExlHCkGP2hqnatagYTgFk6oeL0VU31u7SNjunPN+GchtA==}
 
-  '@types/wicg-file-system-access@2020.9.8':
-    resolution: {integrity: sha512-ggMz8nOygG7d/stpH40WVaNvBwuyYLnrg5Mbyf6bmsj/8+gb6Ei4ZZ9/4PNpcPNTT8th9Q8sM8wYmWGjMWLX/A==}
-
   '@vitest/expect@4.1.9':
     resolution: {integrity: sha512-vl/rYsUKcBr3SnQn166+XR5ZQcgMx3DQhFWdfli/cWpLnLUmbxZvyrJZotLFUryib+LtArYMSTJ5RbQ57ZqrlA==}
 
@@ -1404,10 +1398,6 @@ packages:
         optional: true
       jsdom:
         optional: true
-
-  webm-muxer@5.1.4:
-    resolution: {integrity: sha512-ditzgFVFbfqPaugkIr4mGhAdob5K9HY6Rzlh7TRsA368yA1sp/m5O7nQCcMLdgFDeNGtFPg8B+MeXLtpzKWX6Q==}
-    deprecated: This library is superseded by Mediabunny. Please migrate to it.
 
   why-is-node-running@2.3.0:
     resolution: {integrity: sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w==}
@@ -2060,8 +2050,6 @@ snapshots:
     dependencies:
       csstype: 3.2.3
 
-  '@types/wicg-file-system-access@2020.9.8': {}
-
   '@vitest/expect@4.1.9':
     dependencies:
       '@standard-schema/spec': 1.1.0
@@ -2501,11 +2489,6 @@ snapshots:
       '@types/node': 22.10.5
     transitivePeerDependencies:
       - msw
-
-  webm-muxer@5.1.4:
-    dependencies:
-      '@types/dom-webcodecs': 0.1.19
-      '@types/wicg-file-system-access': 2020.9.8
 
   why-is-node-running@2.3.0:
     dependencies:

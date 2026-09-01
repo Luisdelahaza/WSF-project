@@ -13,6 +13,8 @@ import {
 } from "@/components/ui/select";
 
 const FALLBACK_MAX_EPOCH = 20;
+const MIN_FPS = 1;
+const MAX_FPS = 30;
 
 interface Props {
   params: RenderParams;
@@ -127,10 +129,21 @@ export default function TimeframeControls(p: Props) {
             <Field label="FPS">
               <Input
                 type="number"
-                min={1}
-                max={30}
+                min={MIN_FPS}
+                max={MAX_FPS}
                 value={p.fps}
-                onChange={(e) => p.setFps(Number(e.target.value))}
+                onChange={(e) => {
+                  // The `min`/`max` attributes above are only a visual hint
+                  // (spinner arrows) — they don't stop someone from typing
+                  // "0" or clearing the field entirely, both of which used
+                  // to reach the encoders as fps = 0 and silently produce a
+                  // broken export (infinite-speed GIF / near-zero-length
+                  // video). Clamp here so an invalid value never leaves this
+                  // component. `|| MIN_FPS` also covers NaN (non-numeric
+                  // input) and an empty field (Number("") === 0).
+                  const raw = Number(e.target.value) || MIN_FPS;
+                  p.setFps(Math.min(MAX_FPS, Math.max(MIN_FPS, raw)));
+                }}
               />
             </Field>
             <Field label="Width">
