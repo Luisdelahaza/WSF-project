@@ -9,11 +9,7 @@ interface Props {
   busy: boolean;
   progress: { done: number; total: number } | null;
   resultUrl: string | null;
-  // The format the CURRENT resultUrl was actually encoded as — derived from
-  // the resulting Blob's real MIME type, not from what the user selected in
-  // TimeframeControls. These can differ (silent video->GIF degradation), and
-  // when they do, the filename/extension must reflect the real content —
-  // downloading actual GIF bytes named "*.webm" is worse than confusing.
+
   resultFormat: ExportFormat | null;
   format: ExportFormat;
   loading: boolean;

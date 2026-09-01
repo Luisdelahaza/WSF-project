@@ -11,13 +11,6 @@ function hexToRgb(hex: string): [number, number, number] {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
-/**
- * The GIF palette is knowable ahead of time — no quantize() pass needed at
- * all. See the comment in the previous version of this file for the full
- * rationale (WSF_COLORMAP is fixed, BACKDROP + white/black/grey cover the
- * overlay). This is a deliberate approximation of the overlay's blended
- * edges — worth a visual check on an exported GIF.
- */
 const PALETTE: number[][] = [
   ...Object.values(WSF_COLORMAP).map(hexToRgb),
   hexToRgb(BACKDROP),
@@ -26,16 +19,13 @@ const PALETTE: number[][] = [
   [128, 128, 128],
 ];
 
+
+export function gifDelayMs(fps: number): number {
+  return Math.max(20, Math.round(1000 / fps));
+}
+
 type Flatten = (canvas: HTMLCanvasElement) => ImageData;
 
-/**
- * Returns a `flatten` function that reuses ONE scratch canvas across every
- * frame passed to it, instead of allocating a new canvas per frame — but
- * scoped to a single `createFlattener()` call (i.e. one `encodeGif()` call),
- * not shared globally across the whole module. A module-level singleton
- * would leak the same canvas across unrelated exports (or tests) — two
- * exports running back to back could stomp on each other's in-flight frame.
- */
 function createFlattener(): Flatten {
   let scratch: HTMLCanvasElement | null = null;
 
@@ -48,9 +38,6 @@ function createFlattener(): Flatten {
       scratch.height = canvas.height;
     }
     const ctx = scratch.getContext("2d")!;
-    // fillRect always fully repaints the opaque backdrop, so resizing
-    // (which clears the canvas) or reusing it (which leaves old pixels
-    // behind) are both safe here.
     ctx.fillStyle = BACKDROP;
     ctx.fillRect(0, 0, scratch.width, scratch.height);
     ctx.drawImage(canvas, 0, 0);
@@ -158,12 +145,6 @@ async function encodeGifInWorker(
   });
 }
 
-/**
- * Encode composited frames into an animated GIF, entirely client-side using
- * `gifenc`. Offloads to a Worker when available, falling back to a
- * yielding main-thread loop otherwise. Cancellable via `cb.signal`; reports
- * progress via `cb.onProgress`.
- */
 export async function encodeGif(
   frames: CapturedFrame[],
   fps: number,
@@ -174,7 +155,7 @@ export async function encodeGif(
   }
 
   const safeFps = Math.max(1, fps);
-  const delay = Math.max(20, Math.round(1000 / safeFps));
+  const delay = gifDelayMs(safeFps);
   const flatten = createFlattener();
 
   if (typeof Worker !== "undefined") {

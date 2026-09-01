@@ -39,9 +39,7 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
-  // The ACTUAL format of the current resultUrl (from the resulting Blob's
-  // real MIME type) — independent of `format`, the user's request. See the
-  // comment on ExportPanel's `resultFormat` prop.
+
   const [resultFormat, setResultFormat] = useState<ExportFormat | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [videoSupported, setVideoSupported] = useState(true);
@@ -61,9 +59,6 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
 
   useEffect(() => () => void (resultUrl && URL.revokeObjectURL(resultUrl)), [resultUrl]);
 
-  // Reset any previous export result whenever an input that would make it
-  // stale changes — otherwise the Download button stays visible/enabled and
-  // pointing at a blob for parameters that no longer match the selection.
   useEffect(() => {
     setResultUrl(null);
     setResultFormat(null);
@@ -128,9 +123,7 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
         ? encodeGif(captured, fps, { signal: controller.signal })
         : encodeVideo(captured, fps, controller.signal));
 
-      // Derive the ACTUAL format from what came back, not from what was
-      // requested — this is the single source of truth for the download
-      // filename/extension and for detecting silent degradation.
+     
       const actualFormat: ExportFormat = blob.type === "image/gif" ? "gif" : "webm";
       setResultFormat(actualFormat);
       if (format !== "gif" && actualFormat === "gif") {

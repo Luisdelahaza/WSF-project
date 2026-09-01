@@ -30,9 +30,7 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Full-sequence preload, triggered by pressing Play (see handlePlayToggle),
-  // so playback afterwards is smooth/instant instead of stalling on network
-  // fetches frame by frame.
+
   const [preloading, setPreloading] = useState(false);
   const [preloadDone, setPreloadDone] = useState(0);
 
@@ -49,8 +47,6 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
     ctx.drawImage(src, 0, 0);
   }, []);
 
-  // Load the MindEarth logo once on mount; reused for every frame's overlay
-  // (same pattern captureFrames uses for the real export).
   useEffect(() => {
     logoLoadingRef.current = loadLogo()
       .then((img) => {
@@ -60,8 +56,6 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
       .catch(() => null);
   }, []);
 
-  // Invalidate cache when bbox or params change — also cancels any preload
-  // in progress, since the frames it was fetching no longer match.
   useEffect(() => {
     cacheRef.current.clear();
     preloadAbortRef.current?.abort();
@@ -69,12 +63,11 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
     setPreloadDone(0);
   }, [bbox, params]);
 
-  // Cancel any in-flight preload on unmount.
   useEffect(() => {
     return () => preloadAbortRef.current?.abort();
   }, []);
 
-  // Clamp index when frame list shrinks
+
   useEffect(() => {
     if (currentIdx >= frames.length) {
       setCurrentIdx(Math.max(0, frames.length - 1));
@@ -82,8 +75,6 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
     }
   }, [frames.length, currentIdx]);
 
-  // Fetch + draw current frame (used for scrubbing / initial view; playback
-  // relies on preloadAll having already populated the cache instead).
   useEffect(() => {
     if (!currentFrame) return;
     const epoch = currentFrame.epoch;
@@ -122,11 +113,7 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
     return () => controller.abort();
   }, [currentFrame, bbox, params, drawToCanvas]);
 
-  /**
-   * Renders + caches every frame in the sequence up front, so that once
-   * playback starts, every frame is already in `cacheRef` and advancing
-   * through them is instant (no per-frame network wait, no stutter).
-   */
+
   const preloadAll = useCallback(async () => {
     const controller = new AbortController();
     preloadAbortRef.current = controller;
@@ -182,11 +169,6 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
     setPlaying(true);
   }, [playing, frames, preloadAll]);
 
-  // Playback loop — advances one frame every `1000/fps` ms. Guarded on
-  // `!fetching` as a safety net (e.g. a manual scrub lands on an uncached
-  // frame right as playback resumes); in the normal case, preloadAll has
-  // already populated the cache, so `fetching` never triggers and playback
-  // is smooth.
   useEffect(() => {
     if (!playing || frames.length < 2 || fetching) return;
     const timeout = setTimeout(() => {
