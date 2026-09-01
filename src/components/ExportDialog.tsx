@@ -41,6 +41,11 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [videoSupported, setVideoSupported] = useState(true);
+  // True when the user asked for a video but the export pipeline silently
+  // degraded to GIF (neither WebCodecs/Mediabunny nor MediaRecorder worked
+  // in this browser). Both fallback paths only `console.warn` internally —
+  // this surfaces it to the person actually exporting.
+  const [degraded, setDegraded] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const maxEpoch = meta?.maxEpoch ?? 0;
@@ -55,6 +60,16 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
   );
 
   useEffect(() => () => void (resultUrl && URL.revokeObjectURL(resultUrl)), [resultUrl]);
+
+  // Reset any previous export result whenever an input that would make it
+  // stale changes. Previously `setResultUrl(null)` only happened at the top
+  // of onExport, so changing the area/period/format *after* exporting left
+  // the Download button visible and pointing at a blob for parameters that
+  // no longer match what's selected.
+  useEffect(() => {
+    setResultUrl(null);
+    setDegraded(false);
+  }, [bbox, params, startEpoch, endEpoch, format]);
 
   useEffect(() => {
     const ok = canVideoEncode();
@@ -92,6 +107,7 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
     setBusy(true);
     setError(null);
     setResultUrl(null);
+    setDegraded(false);
     setProgress({ done: 0, total: frames.length });
     const controller = new AbortController();
     abortRef.current = controller;
@@ -107,10 +123,19 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
           onProgress: (done, total) => setProgress({ done, total }),
         },
       );
-      const blob =
-        format === "gif"
-          ? encodeGif(captured, fps)
-          : await encodeVideo(captured, fps, controller.signal);
+
+      const blob = await (format === "gif"
+        ? encodeGif(captured, fps, { signal: controller.signal })
+        : encodeVideo(captured, fps, controller.signal));
+
+      // Both encodeVideo's internal tier fallbacks and encodeGif's own
+      // Worker->main-thread fallback degrade silently — this is the one
+      // place we can actually tell: the user asked for something other
+      // than GIF, but what came back IS a GIF.
+      if (format !== "gif" && blob.type === "image/gif") {
+        setDegraded(true);
+      }
+
       setResultUrl(URL.createObjectURL(blob));
     } catch (e) {
       if ((e as DOMException)?.name !== "AbortError") setError(e);
@@ -155,6 +180,16 @@ export default function ExportDialog({ bbox, setBbox }: Props) {
               videoSupported={videoSupported}
               meta={meta}
             />
+
+            {degraded && (
+              <div
+                role="status"
+                className="rounded-md border border-yellow-600/40 bg-yellow-600/10 px-3 py-2 text-xs text-yellow-200"
+              >
+                Your browser couldn't encode a video, so this export is a GIF instead.
+              </div>
+            )}
+
             <ExportPanel
               budget={budget}
               meta={meta}

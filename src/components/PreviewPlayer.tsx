@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Play, Pause } from "lucide-react";
 import type { Bbox4326, Frame, RenderParams } from "@/types";
 import { config } from "@/config/wsf";
+import { BACKDROP } from "@/config/colors";
 import { renderEpochFrame } from "@/lib/frameCapture";
+import { drawOverlay, loadLogo, type LogoImage } from "@/lib/overlay";
 import { epochToSemesterLabel } from "@/lib/wsfMetadata";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
@@ -19,10 +21,20 @@ interface Props {
 export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cacheRef = useRef<Map<number, HTMLCanvasElement>>(new Map());
+  const logoRef = useRef<LogoImage | null>(null);
+  const logoLoadingRef = useRef<Promise<LogoImage | null> | null>(null);
+  const preloadAbortRef = useRef<AbortController | null>(null);
+
   const [currentIdx, setCurrentIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Full-sequence preload, triggered by pressing Play (see handlePlayToggle),
+  // so playback afterwards is smooth/instant instead of stalling on network
+  // fetches frame by frame.
+  const [preloading, setPreloading] = useState(false);
+  const [preloadDone, setPreloadDone] = useState(0);
 
   const currentFrame = frames[currentIdx];
 
@@ -32,15 +44,35 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
     canvas.width = src.width;
     canvas.height = src.height;
     const ctx = canvas.getContext("2d")!;
-    ctx.fillStyle = "#1a1a2e";
+    ctx.fillStyle = BACKDROP;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(src, 0, 0);
   }, []);
 
-  // Invalidate cache when bbox or params change
+  // Load the MindEarth logo once on mount; reused for every frame's overlay
+  // (same pattern captureFrames uses for the real export).
+  useEffect(() => {
+    logoLoadingRef.current = loadLogo()
+      .then((img) => {
+        logoRef.current = img;
+        return img;
+      })
+      .catch(() => null);
+  }, []);
+
+  // Invalidate cache when bbox or params change — also cancels any preload
+  // in progress, since the frames it was fetching no longer match.
   useEffect(() => {
     cacheRef.current.clear();
+    preloadAbortRef.current?.abort();
+    setPreloading(false);
+    setPreloadDone(0);
   }, [bbox, params]);
+
+  // Cancel any in-flight preload on unmount.
+  useEffect(() => {
+    return () => preloadAbortRef.current?.abort();
+  }, []);
 
   // Clamp index when frame list shrinks
   useEffect(() => {
@@ -50,7 +82,8 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
     }
   }, [frames.length, currentIdx]);
 
-  // Fetch + draw current frame
+  // Fetch + draw current frame (used for scrubbing / initial view; playback
+  // relies on preloadAll having already populated the cache instead).
   useEffect(() => {
     if (!currentFrame) return;
     const epoch = currentFrame.epoch;
@@ -66,7 +99,13 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
     setError(null);
 
     renderEpochFrame(config.apiPrefix, config.datasetUrl, bbox, params, epoch, controller.signal)
-      .then((src) => {
+      .then(async (src) => {
+        if (logoLoadingRef.current) await logoLoadingRef.current;
+        try {
+          drawOverlay(src.getContext("2d")!, { frame: currentFrame, params, logo: logoRef.current });
+        } catch (e) {
+          console.error("[PreviewPlayer] drawOverlay failed:", e);
+        }
         cacheRef.current.set(epoch, src);
         drawToCanvas(src);
       })
@@ -83,10 +122,74 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
     return () => controller.abort();
   }, [currentFrame, bbox, params, drawToCanvas]);
 
-  // Playback loop
+  /**
+   * Renders + caches every frame in the sequence up front, so that once
+   * playback starts, every frame is already in `cacheRef` and advancing
+   * through them is instant (no per-frame network wait, no stutter).
+   */
+  const preloadAll = useCallback(async () => {
+    const controller = new AbortController();
+    preloadAbortRef.current = controller;
+    setPreloading(true);
+    setPreloadDone(0);
+    setError(null);
+
+    try {
+      if (logoLoadingRef.current) await logoLoadingRef.current;
+
+      let done = 0;
+      for (const frame of frames) {
+        if (controller.signal.aborted) return;
+
+        if (!cacheRef.current.has(frame.epoch)) {
+          const src = await renderEpochFrame(
+            config.apiPrefix,
+            config.datasetUrl,
+            bbox,
+            params,
+            frame.epoch,
+            controller.signal,
+          );
+          try {
+            drawOverlay(src.getContext("2d")!, { frame, params, logo: logoRef.current });
+          } catch (e) {
+            console.error("[PreviewPlayer] drawOverlay failed:", e);
+          }
+          cacheRef.current.set(frame.epoch, src);
+        }
+        done++;
+        setPreloadDone(done);
+      }
+    } catch (e) {
+      if ((e as DOMException)?.name !== "AbortError") {
+        console.error("[PreviewPlayer] preload failed:", e);
+        setError(String((e as Error)?.message ?? e));
+      }
+    } finally {
+      if (!controller.signal.aborted) setPreloading(false);
+    }
+  }, [frames, bbox, params]);
+
+  const handlePlayToggle = useCallback(async () => {
+    if (playing) {
+      setPlaying(false);
+      return;
+    }
+    const allCached = frames.every((f) => cacheRef.current.has(f.epoch));
+    if (!allCached) {
+      await preloadAll();
+    }
+    setPlaying(true);
+  }, [playing, frames, preloadAll]);
+
+  // Playback loop — advances one frame every `1000/fps` ms. Guarded on
+  // `!fetching` as a safety net (e.g. a manual scrub lands on an uncached
+  // frame right as playback resumes); in the normal case, preloadAll has
+  // already populated the cache, so `fetching` never triggers and playback
+  // is smooth.
   useEffect(() => {
-    if (!playing || frames.length < 2) return;
-    const interval = setInterval(() => {
+    if (!playing || frames.length < 2 || fetching) return;
+    const timeout = setTimeout(() => {
       setCurrentIdx((idx) => {
         const next = idx + 1;
         if (next >= frames.length) {
@@ -96,8 +199,8 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
         return next;
       });
     }, 1000 / fps);
-    return () => clearInterval(interval);
-  }, [playing, fps, frames.length]);
+    return () => clearTimeout(timeout);
+  }, [playing, fps, frames.length, fetching, currentIdx]);
 
   if (!frames.length) {
     return (
@@ -116,7 +219,12 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
           className="border-border w-full rounded-lg border"
           style={{ minHeight: "24rem" }}
         />
-        {fetching && (
+        {preloading && (
+          <div className="text-muted-foreground absolute inset-0 flex items-center justify-center rounded-lg bg-background/60 text-sm">
+            Loading frames… {preloadDone} / {frames.length}
+          </div>
+        )}
+        {!preloading && fetching && (
           <div className="text-muted-foreground absolute inset-0 flex items-center justify-center rounded-lg bg-background/60 text-sm">
             Rendering frame…
           </div>
@@ -133,8 +241,8 @@ export default function PreviewPlayer({ frames, bbox, params, fps }: Props) {
         <Button
           variant="outline"
           size="icon-sm"
-          onClick={() => setPlaying((p) => !p)}
-          disabled={frames.length < 2}
+          onClick={handlePlayToggle}
+          disabled={frames.length < 2 || preloading}
           aria-label={playing ? "Pause" : "Play"}
         >
           {playing ? <Pause className="size-3" /> : <Play className="size-3" />}

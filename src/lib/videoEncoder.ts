@@ -1,8 +1,6 @@
 import type { CapturedFrame } from "@/types";
 import { encodeGif } from "@/lib/gifEncoder";
-
-
-const BACKDROP = "#1a1a2e";
+import { BACKDROP } from "@/config/colors";
 
 function flatten(canvas: HTMLCanvasElement): HTMLCanvasElement {
   const flat = document.createElement("canvas");
@@ -15,61 +13,80 @@ function flatten(canvas: HTMLCanvasElement): HTMLCanvasElement {
   return flat;
 }
 
-
+/**
+ * Tier 1 — WebCodecs via Mediabunny's `CanvasSource`: frame-accurate WebM,
+ * faster than realtime.
+ */
 async function encodeWithWebCodecs(
   frames: CapturedFrame[],
   fps: number,
   signal?: AbortSignal,
 ): Promise<Blob> {
-  const { Muxer, ArrayBufferTarget } = await import("webm-muxer");
+  const { Output, WebMOutputFormat, BufferTarget, CanvasSource, Quality } = await import(
+    "mediabunny"
+  );
 
-  const width = frames[0].canvas.width;
-  const height = frames[0].canvas.height;
+  const canvas = document.createElement("canvas");
+  canvas.width = frames[0].canvas.width;
+  canvas.height = frames[0].canvas.height;
+  const ctx = canvas.getContext("2d")!;
 
-  const target = new ArrayBufferTarget();
-  const muxer = new Muxer({
-    target,
-    video: { codec: "V_VP9", width, height, frameRate: fps },
+  const output = new Output({
+    format: new WebMOutputFormat(),
+    target: new BufferTarget(),
   });
 
-  let encoderError: unknown = null;
-  const videoEncoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-    error: (e) => {
-      encoderError = e;
-    },
+  const videoSource = new CanvasSource(canvas, {
+    codec: "vp9",
+    // Constant-quality via VP9's quantizer (0-63, lower = higher quality)
+    // instead of a fixed target bitrate. A flat bitrate number is a guess
+    // that's wrong at every resolution/frame-count the export budget allows
+    // (config/wsf.ts BUDGET) — too high for a short clip, too low for a
+    // long one. Quantizer mode asks for a consistent quality level instead
+    // and lets the encoder spend however many bits that actually costs.
+    // 24 is a reasonably conservative pick for this content (flat colormap
+    // fills + text/logo overlay, not photographic detail) — adjust down for
+    // higher quality/larger files, up for smaller/lower quality.
+    quality: new Quality({ quantizer: 24 }),
   });
-  videoEncoder.configure({
-    codec: "vp09.00.10.08",
-    width,
-    height,
-    bitrate: 4_000_000,
-    framerate: fps,
-  });
+  output.addVideoTrack(videoSource, { frameRate: fps });
 
-  const frameDurationUs = Math.round(1_000_000 / fps);
+  await output.start();
+
+  const frameDuration = 1 / fps; // seconds — Mediabunny timestamps are in seconds, not µs
   let timestamp = 0;
 
   for (const frame of frames) {
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    if (encoderError) throw encoderError;
+    if (signal?.aborted) {
+      // output.cancel() frees all resources the Output holds (encoders,
+      // writer, etc.) — Mediabunny handles this cleanup for us.
+      await output.cancel();
+      throw new DOMException("Aborted", "AbortError");
+    }
 
-    const canvas = flatten(frame.canvas);
-    const videoFrame = new VideoFrame(canvas, { timestamp, duration: frameDurationUs });
-    videoEncoder.encode(videoFrame);
-    videoFrame.close();
-    timestamp += frameDurationUs;
+    const flat = flatten(frame.canvas);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(flat, 0, 0);
+
+    await videoSource.add(timestamp, frameDuration);
+    timestamp += frameDuration;
   }
 
-  await videoEncoder.flush();
-  videoEncoder.close();
-  if (encoderError) throw encoderError;
+  videoSource.close();
+  await output.finalize();
 
-  muxer.finalize();
-  return new Blob([target.buffer], { type: "video/webm" });
+  return new Blob([output.target.buffer!], { type: "video/webm" });
 }
 
-
+/**
+ * Tier 2 — `MediaRecorder` over `canvas.captureStream(0)`, pushing frames
+ * manually (`track.requestFrame()`) and holding each one ~1000/fps ms.
+ * Wall-clock timing (not frame-accurate), but works without WebCodecs.
+ *
+ * This tier exists for browsers that support `MediaRecorder` but not the
+ * WebCodecs `VideoEncoder` API Tier 1 depends on — notably older Safari
+ * (14.1–16.3), Firefox below ~130, and older Chromium builds.
+ */
 async function encodeWithMediaRecorder(
   frames: CapturedFrame[],
   fps: number,
@@ -85,8 +102,13 @@ async function encodeWithMediaRecorder(
   const stream = canvas.captureStream(0);
   const track = stream.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack;
 
-  const mimeType = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find(
-    (t) => MediaRecorder.isTypeSupported(t),
+  // Stops the underlying MediaStreamTrack so the canvas capture doesn't
+  // stay "live" after we're done with it — on abort, on error, and on
+  // normal completion.
+  const stopStream = () => stream.getTracks().forEach((t) => t.stop());
+
+  const mimeType = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find((t) =>
+    MediaRecorder.isTypeSupported(t),
   );
   const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
 
@@ -96,8 +118,14 @@ async function encodeWithMediaRecorder(
   };
 
   const finished = new Promise<Blob>((resolve, reject) => {
-    recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType ?? "video/webm" }));
-    recorder.onerror = (e) => reject(e);
+    recorder.onstop = () => {
+      stopStream();
+      resolve(new Blob(chunks, { type: mimeType ?? "video/webm" }));
+    };
+    recorder.onerror = (e) => {
+      stopStream();
+      reject(e);
+    };
   });
 
   recorder.start();
@@ -106,6 +134,7 @@ async function encodeWithMediaRecorder(
   for (const frame of frames) {
     if (signal?.aborted) {
       recorder.stop();
+      stopStream();
       throw new DOMException("Aborted", "AbortError");
     }
     const flat = flatten(frame.canvas);
@@ -119,7 +148,11 @@ async function encodeWithMediaRecorder(
   return finished;
 }
 
-
+/**
+ * Encode frames to video, entirely client-side, with graceful cross-browser
+ * degradation: WebCodecs via Mediabunny (frame-accurate) -> MediaRecorder
+ * (wall-clock) -> GIF (universal fallback). Cancellable via `signal`.
+ */
 export async function encodeVideo(
   frames: CapturedFrame[],
   fps: number,
@@ -127,9 +160,15 @@ export async function encodeVideo(
 ): Promise<Blob> {
   if (!frames.length) return new Blob([], { type: "video/webm" });
 
+  // Guards fps <= 0. Without this: encodeWithWebCodecs's frame duration
+  // becomes Infinity, `new VideoFrame(..., { duration: Infinity })` throws,
+  // and we'd drop to Tier 2 where `setTimeout(fn, Infinity)` silently
+  // coerces to 0 — a near-zero-length "video" with no visible error.
+  const safeFps = Math.max(1, fps);
+
   if (typeof window !== "undefined" && typeof window.VideoEncoder !== "undefined") {
     try {
-      return await encodeWithWebCodecs(frames, fps, signal);
+      return await encodeWithWebCodecs(frames, safeFps, signal);
     } catch (e) {
       if ((e as DOMException)?.name === "AbortError") throw e;
       console.warn("[encodeVideo] WebCodecs path failed, falling back:", e);
@@ -142,17 +181,20 @@ export async function encodeVideo(
     typeof HTMLCanvasElement.prototype.captureStream === "function"
   ) {
     try {
-      return await encodeWithMediaRecorder(frames, fps, signal);
+      return await encodeWithMediaRecorder(frames, safeFps, signal);
     } catch (e) {
       if ((e as DOMException)?.name === "AbortError") throw e;
       console.warn("[encodeVideo] MediaRecorder path failed, falling back to GIF:", e);
     }
   }
 
-  return encodeGif(frames, fps);
+  return encodeGif(frames, safeFps, { signal });
 }
 
-
+/**
+ * Whether any client-side video encoder is available in this browser. The UI
+ * should default to GIF (and hide/disable the video option) when this is false.
+ */
 export function canVideoEncode(): boolean {
   if (typeof window === "undefined") return false;
   const hasWebCodecs = typeof window.VideoEncoder !== "undefined";

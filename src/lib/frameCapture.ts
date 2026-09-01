@@ -1,7 +1,7 @@
 import type { ApiPrefix, Bbox4326, CapturedFrame, Frame, RenderParams } from "@/types";
 import { BUDGET, TILE_SIZE } from "@/config/wsf";
 import { fetchTile } from "@/lib/tileClient";
-import { drawOverlay, loadLogo } from "@/lib/overlay";
+import { drawOverlay, loadLogo, type LogoImage } from "@/lib/overlay";
 
 export interface CaptureCallbacks {
   onProgress?: (done: number, total: number) => void;
@@ -99,7 +99,7 @@ export async function captureFrames(
   frames: Frame[],
   cb: CaptureCallbacks = {},
 ): Promise<CapturedFrame[]> {
-  let logo: HTMLImageElement | null = null;
+  let logo: LogoImage | null = null;
   try {
     logo = await loadLogo();
   } catch {

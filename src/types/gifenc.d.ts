@@ -12,9 +12,18 @@ declare module "gifenc" {
     bytes(): Uint8Array<ArrayBuffer>;
   }
   export function GIFEncoder(): GifEncoderInstance;
-  export function quantize(rgba: Uint8Array | Uint8ClampedArray, maxColors: number): number[][];
+
+  export type GifPixelFormat = "rgb565" | "rgb444" | "rgba4444";
+
+  export function quantize(
+    rgba: Uint8Array | Uint8ClampedArray,
+    maxColors: number,
+    options?: { format?: GifPixelFormat },
+  ): number[][];
+
   export function applyPalette(
     rgba: Uint8Array | Uint8ClampedArray,
     palette: number[][],
+    format?: GifPixelFormat,
   ): Uint8Array;
 }
